@@ -35,6 +35,7 @@ import (
 type handler struct {
 	server         TChanServer
 	postResponseCB PostResponseCB
+	protocolPool   ProtocolPool
 }
 
 // Server handles incoming TChannel calls and forwards them to the matching TChanServer.
@@ -69,7 +70,7 @@ func NewServer(registrar tchannel.Registrar) *Server {
 // TODO(prashant): Replace Register call with this call.
 func (s *Server) Register(svr TChanServer, opts ...RegisterOption) {
 	service := svr.Service()
-	handler := &handler{server: svr}
+	handler := &handler{server: svr, protocolPool: DefaultProtocolPool}
 	for _, opt := range opts {
 		opt.Apply(handler)
 	}
@@ -159,9 +160,9 @@ func (s *Server) handle(origCtx context.Context, handler handler, method string,
 	origCtx = tchannel.ExtractInboundSpan(origCtx, call, headers, tracer)
 	ctx := s.ctxFn(origCtx, method, headers)
 
-	wp := getProtocolReader(reader)
-	success, resp, err := handler.server.Handle(ctx, method, wp.protocol)
-	thriftProtocolPool.Put(wp)
+	wp := getProtocolReader(handler.protocolPool, reader)
+	success, resp, err := handler.server.Handle(ctx, method, wp.Protocol)
+	handler.protocolPool.Release(wp)
 
 	if handler.postResponseCB != nil {
 		defer handler.postResponseCB(ctx, method, resp)
@@ -202,9 +203,9 @@ func (s *Server) handle(origCtx context.Context, handler handler, method string,
 	}
 
 	writer, err = call.Response().Arg3Writer()
-	wp = getProtocolWriter(writer)
-	resp.Write(wp.protocol)
-	thriftProtocolPool.Put(wp)
+	wp = getProtocolWriter(handler.protocolPool, writer)
+	resp.Write(wp.Protocol)
+	handler.protocolPool.Release(wp)
 	err = writer.Close()
 
 	return err

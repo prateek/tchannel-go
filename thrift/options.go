@@ -45,3 +45,16 @@ func OptPostResponse(cb PostResponseCB) RegisterOption {
 func (o optPostResponse) Apply(h *handler) {
 	h.postResponseCB = PostResponseCB(o)
 }
+
+// OptProtocolPool registers a ProtocolPool for use by the server.
+func OptProtocolPool(p ProtocolPool) RegisterOption {
+	return optProtocolPool{p}
+}
+
+type optProtocolPool struct {
+	ProtocolPool
+}
+
+func (o optProtocolPool) Apply(h *handler) {
+	h.protocolPool = o.ProtocolPool
+}

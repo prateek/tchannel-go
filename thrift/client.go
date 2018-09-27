@@ -30,27 +30,34 @@ import (
 
 // client implements TChanClient and makes outgoing Thrift calls.
 type client struct {
-	ch          *tchannel.Channel
-	sc          *tchannel.SubChannel
-	serviceName string
-	opts        ClientOptions
+	ch           *tchannel.Channel
+	sc           *tchannel.SubChannel
+	serviceName  string
+	protocolPool ProtocolPool
+	opts         ClientOptions
 }
 
 // ClientOptions are options to customize the client.
 type ClientOptions struct {
 	// HostPort specifies a specific server to hit.
 	HostPort string
+	// ProtocolPool specifies a ProtocolPool to use.
+	ProtocolPool ProtocolPool
 }
 
 // NewClient returns a Client that makes calls over the given tchannel to the given Hyperbahn service.
 func NewClient(ch *tchannel.Channel, serviceName string, opts *ClientOptions) TChanClient {
 	client := &client{
-		ch:          ch,
-		sc:          ch.GetSubChannel(serviceName),
-		serviceName: serviceName,
+		ch:           ch,
+		sc:           ch.GetSubChannel(serviceName),
+		serviceName:  serviceName,
+		protocolPool: DefaultProtocolPool,
 	}
 	if opts != nil {
 		client.opts = *opts
+	}
+	if opts != nil && client.opts.ProtocolPool != nil {
+		client.protocolPool = client.opts.ProtocolPool
 	}
 	return client
 }
@@ -62,7 +69,7 @@ func (c *client) startCall(ctx context.Context, method string, callOptions *tcha
 	return c.sc.BeginCall(ctx, method, callOptions)
 }
 
-func writeArgs(call *tchannel.OutboundCall, headers map[string]string, req thrift.TStruct) error {
+func writeArgs(call *tchannel.OutboundCall, headers map[string]string, req thrift.TStruct, pool ProtocolPool) error {
 	writer, err := call.Arg2Writer()
 	if err != nil {
 		return err
@@ -80,7 +87,7 @@ func writeArgs(call *tchannel.OutboundCall, headers map[string]string, req thrif
 		return err
 	}
 
-	if err := WriteStruct(writer, req); err != nil {
+	if err := WriteStructPooled(pool, writer, req); err != nil {
 		return err
 	}
 
@@ -89,7 +96,7 @@ func writeArgs(call *tchannel.OutboundCall, headers map[string]string, req thrif
 
 // readResponse reads the response struct into resp, and returns:
 // (response headers, whether there was an application error, unexpected error).
-func readResponse(response *tchannel.OutboundCallResponse, resp thrift.TStruct) (map[string]string, bool, error) {
+func readResponse(response *tchannel.OutboundCallResponse, resp thrift.TStruct, pool ProtocolPool) (map[string]string, bool, error) {
 	reader, err := response.Arg2Reader()
 	if err != nil {
 		return nil, false, err
@@ -114,7 +121,7 @@ func readResponse(response *tchannel.OutboundCallResponse, resp thrift.TStruct) 
 		return headers, success, err
 	}
 
-	if err := ReadStruct(reader, resp); err != nil {
+	if err := ReadStructPooled(pool, reader, resp); err != nil {
 		return headers, success, err
 	}
 
@@ -144,11 +151,11 @@ func (c *client) Call(ctx Context, thriftService, methodName string, req, resp t
 			return err
 		}
 
-		if err := writeArgs(call, headers, req); err != nil {
+		if err := writeArgs(call, headers, req, c.protocolPool); err != nil {
 			return err
 		}
 
-		respHeaders, isOK, err = readResponse(call.Response(), resp)
+		respHeaders, isOK, err = readResponse(call.Response(), resp, c.protocolPool)
 		return err
 	})
 	if err != nil {

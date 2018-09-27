@@ -27,17 +27,33 @@ import (
 )
 
 // WriteStruct writes the given Thrift struct to a writer. It pools TProtocols.
+//
+// Deprecated: Users should use WriteStructPooled instead. We retain this method to
+// maintain API compatibility with earlier versions of the library.
 func WriteStruct(writer io.Writer, s thrift.TStruct) error {
-	wp := getProtocolWriter(writer)
-	err := s.Write(wp.protocol)
-	thriftProtocolPool.Put(wp)
+	return WriteStructPooled(DefaultProtocolPool, writer, s)
+}
+
+// WriteStructPooled writes the given Thrift struct to a writer using the given ProtocolPool.
+func WriteStructPooled(pool ProtocolPool, writer io.Writer, s thrift.TStruct) error {
+	wp := getProtocolWriter(pool, writer)
+	err := s.Write(wp.Protocol)
+	pool.Release(wp)
 	return err
 }
 
 // ReadStruct reads the given Thrift struct. It pools TProtocols.
+//
+// Deprecated: Users should use ReadStructPooled instead. We retain this method to
+// maintain API compatibility with earlier versions of the library.
 func ReadStruct(reader io.Reader, s thrift.TStruct) error {
-	wp := getProtocolReader(reader)
-	err := s.Read(wp.protocol)
-	thriftProtocolPool.Put(wp)
+	return ReadStructPooled(DefaultProtocolPool, reader, s)
+}
+
+// ReadStructPooled reads the given Thrift struct using the given ProtocolPool.
+func ReadStructPooled(pool ProtocolPool, reader io.Reader, s thrift.TStruct) error {
+	wp := getProtocolReader(pool, reader)
+	err := s.Read(wp.Protocol)
+	pool.Release(wp)
 	return err
 }

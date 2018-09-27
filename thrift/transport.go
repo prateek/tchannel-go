@@ -28,33 +28,27 @@ import (
 	"github.com/apache/thrift/lib/go/thrift"
 )
 
-// readerWriterTransport is a transport that reads and writes from the underlying Reader/Writer.
-type readWriterTransport struct {
+var (
+	errNoBytesRead = errors.New("no bytes read")
+)
+
+// OptimizedTRichTransport implements thrift.TRichTransport interface to avoid
+// allocating a byte for each operation.
+type OptimizedTRichTransport struct {
 	io.Writer
 	io.Reader
 	readBuf  [1]byte
 	writeBuf [1]byte
 }
 
-var errNoBytesRead = errors.New("no bytes read")
+var _ thrift.TRichTransport = &OptimizedTRichTransport{}
 
-func (t *readWriterTransport) Open() error {
-	return nil
-}
+func (t *OptimizedTRichTransport) Open() error  { return nil }
+func (t *OptimizedTRichTransport) Flush() error { return nil }
+func (t *OptimizedTRichTransport) IsOpen() bool { return true }
+func (t *OptimizedTRichTransport) Close() error { return nil }
 
-func (t *readWriterTransport) Flush() error {
-	return nil
-}
-
-func (t *readWriterTransport) IsOpen() bool {
-	return true
-}
-
-func (t *readWriterTransport) Close() error {
-	return nil
-}
-
-func (t *readWriterTransport) ReadByte() (byte, error) {
+func (t *OptimizedTRichTransport) ReadByte() (byte, error) {
 	v := t.readBuf[0:1]
 
 	var n int
@@ -73,7 +67,7 @@ func (t *readWriterTransport) ReadByte() (byte, error) {
 	return v[0], err
 }
 
-func (t *readWriterTransport) WriteByte(b byte) error {
+func (t *OptimizedTRichTransport) WriteByte(b byte) error {
 	v := t.writeBuf[:1]
 
 	v[0] = b
@@ -81,42 +75,69 @@ func (t *readWriterTransport) WriteByte(b byte) error {
 	return err
 }
 
-func (t *readWriterTransport) WriteString(s string) (int, error) {
+func (t *OptimizedTRichTransport) WriteString(s string) (int, error) {
 	return io.WriteString(t.Writer, s)
 }
 
 // RemainingBytes returns the max number of bytes (same as Thrift's StreamTransport) as we
 // do not know how many bytes we have left.
-func (t *readWriterTransport) RemainingBytes() uint64 {
+func (t *OptimizedTRichTransport) RemainingBytes() uint64 {
 	const maxSize = ^uint64(0)
 	return maxSize
 }
 
-var _ thrift.TRichTransport = &readWriterTransport{}
-
-type thriftProtocol struct {
-	transport *readWriterTransport
-	protocol  *thrift.TBinaryProtocol
+// PooledProtocol is a protocol grouped with a transport to enable pooling.
+type PooledProtocol struct {
+	Transport *OptimizedTRichTransport
+	Protocol  thrift.TProtocol
 }
 
-var thriftProtocolPool = sync.Pool{
-	New: func() interface{} {
-		transport := &readWriterTransport{}
-		protocol := thrift.NewTBinaryProtocolTransport(transport)
-		return &thriftProtocol{transport, protocol}
-	},
+// ProtocolPool is a pool for managing and re-using PooledProtocol(s).
+type ProtocolPool interface {
+	// Get retrieves a protocol from the pool.
+	Get() *PooledProtocol
+
+	// Release releases a protocol back to the pool.
+	Release(p *PooledProtocol)
 }
 
-func getProtocolWriter(writer io.Writer) *thriftProtocol {
-	wp := thriftProtocolPool.Get().(*thriftProtocol)
-	wp.transport.Reader = nil
-	wp.transport.Writer = writer
+// DefaultProtocolPool uses the SyncProtocolPool.
+var DefaultProtocolPool = NewSyncProtocolPool()
+
+type syncProtocolPool struct {
+	pool *sync.Pool
+}
+
+func (p syncProtocolPool) Get() *PooledProtocol {
+	return p.pool.Get().(*PooledProtocol)
+}
+
+func (p syncProtocolPool) Release(value *PooledProtocol) {
+	p.pool.Put(value)
+}
+
+func NewSyncProtocolPool() ProtocolPool {
+	return &syncProtocolPool{
+		pool: &sync.Pool{
+			New: func() interface{} {
+				transport := &OptimizedTRichTransport{}
+				protocol := thrift.NewTBinaryProtocolTransport(transport)
+				return &PooledProtocol{transport, protocol}
+			},
+		},
+	}
+}
+
+func getProtocolWriter(pool ProtocolPool, writer io.Writer) *PooledProtocol {
+	wp := pool.Get()
+	wp.Transport.Reader = nil
+	wp.Transport.Writer = writer
 	return wp
 }
 
-func getProtocolReader(reader io.Reader) *thriftProtocol {
-	wp := thriftProtocolPool.Get().(*thriftProtocol)
-	wp.transport.Reader = reader
-	wp.transport.Writer = nil
+func getProtocolReader(pool ProtocolPool, reader io.Reader) *PooledProtocol {
+	wp := pool.Get()
+	wp.Transport.Reader = reader
+	wp.Transport.Writer = nil
 	return wp
 }
